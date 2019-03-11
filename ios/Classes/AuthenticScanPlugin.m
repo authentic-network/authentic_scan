@@ -3,6 +3,7 @@
 #import <Accelerate/Accelerate.h>
 #import <CoreMotion/CoreMotion.h>
 #import <libkern/OSAtomic.h>
+#import <Foundation/Foundation.h>
 
 static FlutterError *getFlutterError(NSError *error) {
   return [FlutterError errorWithCode:[NSString stringWithFormat:@"Error %d", (int)error.code]
@@ -82,7 +83,7 @@ static FlutterError *getFlutterError(NSError *error) {
     _result([FlutterError errorWithCode:@"IOError" message:@"Unable to write file" details:nil]);
     return;
   }
-  _result(nil);
+    _result(@"{}");
 }
 
 - (UIImageOrientation)getImageRotation {
@@ -223,6 +224,28 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
                                                                    result:result
                                                             motionManager:_motionManager
                                                            cameraPosition:_captureDevice.position]];
+}
+
+- (void)capturePicture:(FlutterMethodCall *)call result:(FlutterResult)result {
+    AVCapturePhotoSettings *settings = [AVCapturePhotoSettings photoSettings];
+    
+    [settings setHighResolutionPhotoEnabled:![@"preview" isEqualToString:call.arguments[@"type"]]];
+    [_capturePhotoOutput
+     capturePhotoWithSettings:settings
+     delegate:[[FLTSavePhotoDelegate alloc] initWithPath:call.arguments[@"jpgPath"]
+                                                  result:result
+                                           motionManager:_motionManager
+                                          cameraPosition:_captureDevice.position]];
+    
+    if(![@"preview" isEqualToString:call.arguments[@"type"]]) {
+        [settings setHighResolutionPhotoEnabled:YES];
+        [_capturePhotoOutput
+            capturePhotoWithSettings:settings
+            delegate:[[FLTSavePhotoDelegate alloc] initWithPath:call.arguments[@"rawPath"]
+                                                  result:result
+                                                  motionManager:_motionManager
+                                                cameraPosition:_captureDevice.position]];
+    }
 }
 
 - (void)setCaptureSessionPreset:(NSString *)resolutionPreset {
@@ -715,6 +738,62 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
   } else if ([@"stopImageStream" isEqualToString:call.method]) {
     [_camera stopImageStream];
     result(nil);
+  } else if ([@"retriveCameraOptions" isEqualToString:call.method]) {
+      NSMutableDictionary* mineDictionary = [[NSMutableDictionary alloc] init];
+      [mineDictionary setObject:_camera.captureDevice.localizedName forKey:@"localizedName"];
+      [mineDictionary setObject:@(_camera.captureDevice.activeColorSpace) forKey:@"activeColorSpace"];
+
+      NSMutableDictionary* activeFormatDictionary = [[NSMutableDictionary alloc] init];
+      [activeFormatDictionary setObject:@(_camera.captureDevice.activeFormat.maxISO) forKey:@"maxISO"];
+      [activeFormatDictionary setObject:@(_camera.captureDevice.activeFormat.minISO) forKey:@"minISO"];
+      //[activeFormatDictionary setObject:[NSNumber valueWithCMTime:_camera.captureDevice.activeFormat.maxExposureDuration] forKey:@"maxExposureDuration"];
+      //[activeFormatDictionary setObject:[NSNumber valueWithCMTime:_camera.captureDevice.activeFormat.minExposureDuration] forKey:@"minExposureDuration"];
+
+      [mineDictionary setObject:activeFormatDictionary forKey:@"activeFormat"];
+      
+      NSMutableArray *formatArray = [[NSMutableArray alloc] init];
+      for ( AVCaptureDeviceFormat *format in [_camera.captureDevice formats] ) {
+          NSMutableDictionary* formatDictionary = [[NSMutableDictionary alloc] init];
+          
+          [mineDictionary setObject:@(format.maxISO) forKey:@"maxISO"];
+          [mineDictionary setObject:@(format.minISO) forKey:@"minISO"];
+
+          NSMutableArray *supportedColorSpaces = [[NSMutableArray alloc] init];
+          for ( NSNumber *value in format.supportedColorSpaces ) {
+              NSMutableDictionary* colorSpaceDictionary = [[NSMutableDictionary alloc] init];
+              [colorSpaceDictionary setObject:value forKey:@"id"];
+              if([value isEqualToNumber:[NSNumber numberWithInt:AVCaptureColorSpace_sRGB]]) {
+                  [colorSpaceDictionary setObject:@"RGB" forKey:@"type"];
+              } else if([value isEqualToNumber:[NSNumber numberWithInt:AVCaptureColorSpace_P3_D65]]) {
+                  [colorSpaceDictionary setObject:@"P3_D65" forKey:@"type"];
+              }
+              [supportedColorSpaces addObject:colorSpaceDictionary];
+          }
+          
+          [formatDictionary setObject:supportedColorSpaces forKey:@"supportedColorSpaces"];
+          
+          NSMutableArray *supportedRanges = [[NSMutableArray alloc] init];
+          for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
+              NSMutableDictionary* rangeDictionary = [[NSMutableDictionary alloc] init];
+              //[rangeDictionary setObject:[NSNumber valueWithCMTime:range.maxFrameDuration] forKey:@"maxFrameDuration"];
+              //[rangeDictionary setObject:[NSNumber valueWithCMTime:range.minFrameDuration] forKey:@"minFrameDuration"];
+              [rangeDictionary setObject:@(range.maxFrameRate) forKey:@"maxFrameRate"];
+              [rangeDictionary setObject:@(range.minFrameRate) forKey:@"minFrameRate"];
+              [supportedRanges addObject:rangeDictionary];
+          }
+          
+          [formatDictionary setObject:supportedRanges forKey:@"supportedRanges"];
+          
+          [formatArray addObject:formatDictionary];
+          
+      }
+      [mineDictionary setObject:formatArray forKey:@"formats"];
+      
+      NSData* nsdata = [NSJSONSerialization dataWithJSONObject:mineDictionary options:NSJSONReadingMutableContainers error:nil];
+      NSString* jsonString =[[NSString alloc] initWithData:nsdata encoding:NSUTF8StringEncoding];
+      result(jsonString);
+  } else if ([@"capteringPicture" isEqualToString:call.method]) {
+      [_camera capturePicture:call result:result];
   } else {
     NSDictionary *argsMap = call.arguments;
     NSUInteger textureId = ((NSNumber *)argsMap[@"textureId"]).unsignedIntegerValue;
