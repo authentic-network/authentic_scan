@@ -4,6 +4,7 @@ import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.Application;
+import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.ImageFormat;
 import android.graphics.Point;
@@ -173,6 +174,8 @@ public class AuthenticScanPlugin implements MethodCallHandler {
               @Override
               public void onActivityDestroyed(Activity activity) {}
             };
+
+    cameraManager = (CameraManager) activity.getApplication().getSystemService(Context.CAMERA_SERVICE);
   }
 
 
@@ -184,7 +187,7 @@ public class AuthenticScanPlugin implements MethodCallHandler {
       return;
     }
     final MethodChannel channel =
-            new MethodChannel(registrar.messenger(), "plugins.flutter.io/camera");
+            new MethodChannel(registrar.messenger(), "authentic.network/camera");
 
     channel.setMethodCallHandler(new AuthenticScanPlugin(registrar, registrar.view(), registrar.activity()));
   }
