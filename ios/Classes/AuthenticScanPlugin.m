@@ -16,11 +16,14 @@ static FlutterError *getFlutterError(NSError *error) {
 @property(readonly, nonatomic) FlutterResult result;
 @property(readonly, nonatomic) CMMotionManager *motionManager;
 @property(readonly, nonatomic) AVCaptureDevicePosition cameraPosition;
+@property(readonly, nonatomic) bool done;
+@property(readonly, nonatomic) SEL onEndCheck;
 
 - initWithPath:(NSString *)filename
             result:(FlutterResult)result
      motionManager:(CMMotionManager *)motionManager
     cameraPosition:(AVCaptureDevicePosition)cameraPosition;
+- (bool)isDone;
 @end
 
 @interface FLTImageStreamHandler : NSObject <FlutterStreamHandler>
@@ -83,7 +86,20 @@ static FlutterError *getFlutterError(NSError *error) {
     _result([FlutterError errorWithCode:@"IOError" message:@"Unable to write file" details:nil]);
     return;
   }
-    _result(@"{}");
+    
+  NSMutableDictionary* resultDictionary = [[NSMutableDictionary alloc] init];
+  NSMutableArray *imageDataList = [[NSMutableArray alloc] init];
+  NSMutableDictionary* imageData = [[NSMutableDictionary alloc] init];
+  [imageData setObject:_path forKey:@"path"];
+  [imageData setObject:@"jpg" forKey:@"type"];
+
+    [imageDataList addObject:imageData];
+    [resultDictionary setObject:imageDataList forKey:@"images"];
+    
+  NSData* nsdata = [NSJSONSerialization dataWithJSONObject:resultDictionary options:NSJSONReadingMutableContainers error:nil];
+  NSString* jsonString =[[NSString alloc] initWithData:nsdata encoding:NSUTF8StringEncoding];
+  
+    _result(jsonString);
 }
 
 - (UIImageOrientation)getImageRotation {
@@ -142,6 +158,7 @@ static FlutterError *getFlutterError(NSError *error) {
 @property(assign, nonatomic) BOOL isAudioSetup;
 @property(assign, nonatomic) BOOL isStreamingImages;
 @property(nonatomic) CMMotionManager *motionManager;
+
 - (instancetype)initWithCameraName:(NSString *)cameraName
                   resolutionPreset:(NSString *)resolutionPreset
                      dispatchQueue:(dispatch_queue_t)dispatchQueue
@@ -170,7 +187,7 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
   NSAssert(self, @"super init cannot be nil");
   _dispatchQueue = dispatchQueue;
   _captureSession = [[AVCaptureSession alloc] init];
-
+    
   _captureDevice = [AVCaptureDevice deviceWithUniqueID:cameraName];
   NSError *localError = nil;
   _captureVideoInput = [AVCaptureDeviceInput deviceInputWithDevice:_captureDevice
@@ -215,6 +232,11 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
   [_captureSession stopRunning];
 }
 
+- (void)callbackCapturePictureDone {
+    NSLog(@"run callbackCapturePictureDone");
+    //[_savePhotoFuture done];
+}
+
 - (void)captureToFile:(NSString *)path result:(FlutterResult)result {
   AVCapturePhotoSettings *settings = [AVCapturePhotoSettings photoSettings];
   [settings setHighResolutionPhotoEnabled:YES];
@@ -227,25 +249,18 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
 }
 
 - (void)capturePicture:(FlutterMethodCall *)call result:(FlutterResult)result {
-    AVCapturePhotoSettings *settings = [AVCapturePhotoSettings photoSettings];
     
+    NSLog(@"capturePicture, init");
+    
+    AVCapturePhotoSettings *settings = [AVCapturePhotoSettings photoSettings];
+    FLTSavePhotoDelegate *jpgPhoto = [[FLTSavePhotoDelegate alloc] initWithPath:call.arguments[@"jpgPath"]
+                                        result:result
+                                 motionManager:_motionManager
+                                cameraPosition:_captureDevice.position];
     [settings setHighResolutionPhotoEnabled:![@"preview" isEqualToString:call.arguments[@"type"]]];
     [_capturePhotoOutput
      capturePhotoWithSettings:settings
-     delegate:[[FLTSavePhotoDelegate alloc] initWithPath:call.arguments[@"jpgPath"]
-                                                  result:result
-                                           motionManager:_motionManager
-                                          cameraPosition:_captureDevice.position]];
-    
-    if(![@"preview" isEqualToString:call.arguments[@"type"]]) {
-        [settings setHighResolutionPhotoEnabled:YES];
-        [_capturePhotoOutput
-            capturePhotoWithSettings:settings
-            delegate:[[FLTSavePhotoDelegate alloc] initWithPath:call.arguments[@"rawPath"]
-                                                  result:result
-                                                  motionManager:_motionManager
-                                                cameraPosition:_captureDevice.position]];
-    }
+     delegate:jpgPhoto];
 }
 
 - (void)setCaptureSessionPreset:(NSString *)resolutionPreset {
@@ -783,7 +798,6 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
           }
           
           [formatDictionary setObject:supportedRanges forKey:@"supportedRanges"];
-          
           [formatArray addObject:formatDictionary];
           
       }
