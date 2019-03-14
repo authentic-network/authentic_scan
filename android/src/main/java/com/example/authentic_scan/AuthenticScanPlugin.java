@@ -358,6 +358,26 @@ public class AuthenticScanPlugin implements MethodCallHandler {
         }
         break;
       }
+      case "startLowLightWarningStream":
+      {
+        try {
+          camera.startLowLightWarningStream();
+          result.success(null);
+        } catch (CameraAccessException e) {
+          result.error("CameraAccess", e.getMessage(), null);
+        }
+        break;
+      }
+      case "stopLowLightWarningStream":
+      {
+        try {
+          camera.stopLowLightWarningStream();
+          result.success(null);
+        } catch (CameraAccessException e) {
+          result.error("CameraAccess", e.getMessage(), null);
+        }
+        break;
+      }
       case "dispose":
       {
         if (camera != null) {
@@ -484,6 +504,7 @@ public class AuthenticScanPlugin implements MethodCallHandler {
     private CameraCaptureSession cameraCaptureSession;
     private EventChannel.EventSink eventSink;
     private ImageReader imageStreamReader;
+    private LowLightWarningReader lowLightWarningStreamReader;
     private int sensorOrientation;
     private boolean isFrontFacing;
     private String cameraName;
@@ -704,6 +725,8 @@ public class AuthenticScanPlugin implements MethodCallHandler {
           imageStreamReader =
                   ImageReader.newInstance(
                           previewSize.getWidth(), previewSize.getHeight(), ImageFormat.YUV_420_888, 2);
+
+          lowLightWarningStreamReader = LowLightWarningReader.newInstance();
 
           synchronized (mCameraStateLock) {
             // Set up ImageReaders for JPEG and RAW outputs.  Place these in a reference
@@ -998,7 +1021,22 @@ public class AuthenticScanPlugin implements MethodCallHandler {
                     cameraCaptureSession = session;
                     captureRequestBuilder.set(
                             CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-                    cameraCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, null);
+                    cameraCaptureSession.setRepeatingRequest(captureRequestBuilder.build(),
+                            new CameraCaptureSession.CaptureCallback() {
+                              @Override
+                              public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
+                                long exposureTime = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+                                if(exposureTime > 50000000){
+                                  lowLightWarningStreamReader.newLowLighWarningState(LowLightWarningReader.LowLighWarningState.bad);
+                                  //Log.i("processImage","WARN: low light situation: exposure time is " + exposureTime * 0.000001 + " ms");
+                                } else {
+                                  lowLightWarningStreamReader.newLowLighWarningState(LowLightWarningReader.LowLighWarningState.ok);
+                                }
+
+                                //lowLightWarningStreamReader.
+                                super.onCaptureCompleted(session, request, result);
+                              }
+                            }, null);
                   } catch (CameraAccessException e) {
                     sendErrorEvent(e.getMessage());
                   }
@@ -1012,6 +1050,13 @@ public class AuthenticScanPlugin implements MethodCallHandler {
               null);
 
       registerImageStreamEventChannel();
+    }
+
+    private void startLowLightWarningStream() throws CameraAccessException {
+      registerLowLightWarningStreamEventChannel();
+    }
+
+    private void stopLowLightWarningStream() throws CameraAccessException {
     }
 
     private void registerImageStreamEventChannel() {
@@ -1028,6 +1073,24 @@ public class AuthenticScanPlugin implements MethodCallHandler {
                 @Override
                 public void onCancel(Object o) {
                   imageStreamReader.setOnImageAvailableListener(null, null);
+                }
+              });
+    }
+
+    private void registerLowLightWarningStreamEventChannel() {
+      final EventChannel lowLightWarningStreamChannel =
+              new EventChannel(getFlutterView(),  CHANNEL + "/lowLightWarningStream");
+
+      lowLightWarningStreamChannel.setStreamHandler(
+              new EventChannel.StreamHandler() {
+                @Override
+                public void onListen(Object o, EventChannel.EventSink eventSink) {
+                  setLowLightWarningStreamAvailableListener(eventSink);
+                }
+
+                @Override
+                public void onCancel(Object o) {
+                  lowLightWarningStreamReader.setOnLowLightWarningAvailableListener(null, null);
                 }
               });
     }
@@ -1068,6 +1131,19 @@ public class AuthenticScanPlugin implements MethodCallHandler {
               null);
     }
 
+    private void setLowLightWarningStreamAvailableListener(final EventChannel.EventSink eventSink) {
+      lowLightWarningStreamReader.setOnLowLightWarningAvailableListener(
+              new LowLightWarningReader.OnLowLightWarningAvailableListener() {
+                @Override
+                public void onLowLightWarningAvailable(final LowLightWarningReader reader) {
+                  Map<String, Object> buffer = new HashMap<>();
+                  buffer.put("lowLightWarningState", reader.acquireLatestLowLightWarning().name());
+                  eventSink.success(buffer);
+                }
+              },
+              null);
+    }
+
     private void sendErrorEvent(String errorDescription) {
       if (eventSink != null) {
         Map<String, String> event = new HashMap<>();
@@ -1094,6 +1170,10 @@ public class AuthenticScanPlugin implements MethodCallHandler {
       if (imageStreamReader != null) {
         imageStreamReader.close();
         imageStreamReader = null;
+      }
+      if (lowLightWarningStreamReader != null) {
+        lowLightWarningStreamReader.close();
+        lowLightWarningStreamReader = null;
       }
     }
 
