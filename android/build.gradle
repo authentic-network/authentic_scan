@@ -40,4 +40,6 @@ dependencies {
     implementation 'javax.annotation:javax.annotation-api:1.2'
     implementation 'androidx.annotation:annotation:1.0.0'
     implementation 'commons-codec:commons-codec:1.11'
+    releaseImplementation(name:"authentic_scan_pipeline-release", ext:"aar")
+    debugImplementation(name:"authentic_scan_pipeline-debug", ext:"aar")
 }

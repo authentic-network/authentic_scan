@@ -6,6 +6,8 @@ import android.app.Activity;
 import android.app.Application;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.ImageFormat;
 import android.graphics.Point;
 import android.graphics.SurfaceTexture;
@@ -26,14 +28,18 @@ import android.media.ImageReader;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.util.Base64;
 import android.util.Log;
 import android.util.Size;
 import android.view.Display;
 import android.view.OrientationEventListener;
 import android.view.Surface;
 
+import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -60,6 +66,9 @@ import io.flutter.plugin.common.PluginRegistry.Registrar;
 import io.flutter.view.FlutterView;
 
 import static android.view.OrientationEventListener.ORIENTATION_UNKNOWN;
+import network.authentic.scan.pipeline.AuthenticScan;
+import network.authentic.scan.pipeline.CopyClassification;
+
 
 /** AuthenticScanPlugin */
 public class AuthenticScanPlugin implements MethodCallHandler {
@@ -367,9 +376,6 @@ public class AuthenticScanPlugin implements MethodCallHandler {
   private Result currentCaptureResult;
 
   private void dequeueAndSaveImage(RefCountedAutoCloseable<ImageReader> reader, int type) {
-
-    Log.d(TAG, "Capture completed, dequeueAndSaveImage");
-
     synchronized (mCameraStateLock) {
 
       imageModeCapturedFlag |= type;
@@ -390,64 +396,83 @@ public class AuthenticScanPlugin implements MethodCallHandler {
         Log.e(TAG, "Too many images queued for saving, dropping image for request");
         return;
       }
+      // Access jpeg encoded byte array provided by camera subsystem
+      ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+      byte[] bytes = new byte[buffer.remaining()];
+      buffer.get(bytes);
+      image.close();
 
-      boolean success = false;
-      try {
-        int format = image.getFormat();
-        switch (format) {
-          case ImageFormat.JPEG: {
-            Log.d("dequeueAndSaveImage", "Save jpg in file " + jpgPath);
-            ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-            byte[] bytes = new byte[buffer.remaining()];
-            buffer.get(bytes);
-            FileOutputStream output = null;
-            try {
-              output = new FileOutputStream(new File(jpgPath));
-              output.write(bytes);
-              success = true;
-            } catch (IOException e) {
-              e.printStackTrace();
-            } finally {
-              image.close();
-              closeOutput(output);
-            }
-            break;
-          }
-          case ImageFormat.RAW_SENSOR: {
-            Log.d("dequeueAndSaveImage", "Save jpg in file " + rawPath);
-            DngCreator dngCreator = new DngCreator(cameraManager.getCameraCharacteristics(cameraId), currentTotalCaptureResult);
-            FileOutputStream output = null;
-            try {
-              output = new FileOutputStream(new File(rawPath));
-              dngCreator.writeImage(output, image);
-              success = true;
-            } catch (IOException e) {
-              e.printStackTrace();
-            } finally {
-              image.close();
-              closeOutput(output);
-            }
-            break;
-          }
-          default: {
-            Log.e(TAG, "Cannot save image, unexpected image format:" + format);
-            break;
-          }
+      // convert into croppable format
+      Bitmap bitmapImage = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, null);
+
+      // handle possibly swapped axis
+      int shortesAxis = Math.min(bitmapImage.getWidth(), bitmapImage.getHeight());
+      // TODO: WARNING: Deduplicate this factor as it has to be in-sync with the scan_screen.dart ui rectangle!
+      int cropRegionEdgeLength = (int) Math.round(shortesAxis*0.8);
+
+      // crop the image
+      Bitmap croppedBitmapImage = bitmapImage.createBitmap(bitmapImage, Math.abs(bitmapImage.getWidth()-cropRegionEdgeLength)/2,
+              Math.abs(bitmapImage.getHeight()-cropRegionEdgeLength)/2,
+              cropRegionEdgeLength, cropRegionEdgeLength);
+
+      // access jpeg encoded byte array
+      ByteArrayOutputStream stream = new ByteArrayOutputStream();
+      croppedBitmapImage.compress(Bitmap.CompressFormat.JPEG, 100, stream);
+      bytes = stream.toByteArray();
+
+      if(true) {
+
+        AuthenticScan scanPipeline = new AuthenticScan();
+        scanPipeline.scan(bytes);
+        CopyClassification copyClassification = scanPipeline.getCopyClassification();
+        boolean[] result = scanPipeline.getCode();
+        float[] copyClassificationResults=scanPipeline.getPantoneClassificationValues();
+
+        Log.d(TAG, "Classification Values are: deltaE "+copyClassificationResults[0] + " redDifference " +
+                copyClassificationResults[1] + " score " + copyClassificationResults[2]);
+        Log.d(TAG, "Scan is classified as: "+scanPipeline.getCopyClassification().toString());
+
+        try {
+
+          JSONObject copyDetectionDebug = new JSONObject();
+          copyDetectionDebug.put("deltaE", copyClassificationResults[0]);
+          copyDetectionDebug.put("redDifference", copyClassificationResults[1]);
+          copyDetectionDebug.put("score", copyClassificationResults[2]);
+          copyDetectionDebug.put("classified", scanPipeline.getCopyClassification().toString());
+
+          JSONArray jsonArray = new JSONArray(result);
+          JSONObject jsonResult = new JSONObject();
+          jsonResult.put("id", Util.byte2hex(Util.boolean2byte(result)));
+          jsonResult.put("copyClassification", copyClassification.name());
+          jsonResult.put("copyDetection", copyDetectionDebug);
+
+          currentCaptureResult.success(jsonResult.toString());
+
+        } catch(JSONException e) {
+          currentCaptureResult.error(TAG, "Could not create result json", e);
         }
-      } catch (Exception e) {
-        Log.e("dequeueAndSaveImage", e.getMessage());
-      }
+      } else {
 
-      // TODO: how to avoid currentCaptureResult being overwritten while we are still waiting
-      // to submit our success
+        Log.i("MainActivity", "Scan pipline is not running");
 
-      Log.d(TAG, "Returning image on " + Thread.currentThread().getName());
-      Log.d(TAG, "imageModeCapturedFlag: " + imageModeCapturedFlag + ", imageModeCaptureRequestFlag: " + imageModeCaptureRequestFlag);
+        try {
+          resultJson.put(type == FLAG_IMAGE_RAW ? "raw" : "jpg", Base64.encodeToString(bytes, Base64.NO_WRAP));
+        } catch (JSONException e) {
+          Log.e(TAG, "Error while generating result JSON", e);
+        }
 
-      if(imageModeCapturedFlag == imageModeCaptureRequestFlag) {
-        final String result = resultJson.toString();
-        resultJson = null;
-        currentCaptureResult.success(result);
+        // TODO: how to avoid currentCaptureResult being overwritten while we are still waiting
+        // to submit our success
+
+        Log.d(TAG, "Returning image on " + Thread.currentThread().getName());
+
+        Log.d(TAG, "imageModeCapturedFlag: " + imageModeCapturedFlag + ", imageModeCaptureRequestFlag: " + imageModeCaptureRequestFlag);
+
+        if(imageModeCapturedFlag == imageModeCaptureRequestFlag) {
+          final String result = resultJson.toString();
+          resultJson = null;
+          currentCaptureResult.success(result);
+        }
       }
     }
   }
